@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">Unora</string>
+    <string name="notification_channel_sharing">Compartilhamento de tela</string>
+    <string name="notification_sharing_title">Compartilhando no Unora</string>
+    <string name="notification_sharing_text">Sua tela está sendo transmitida para a party.</string>
+    <string name="notification_stop">Parar</string>
+</resources>

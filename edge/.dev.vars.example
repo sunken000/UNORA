@@ -1,0 +1,6 @@
+# Secrets stay in the Worker only. Do not prefix them with VITE_.
+# CLOUDFLARE_TURN_KEY_ID=
+# CLOUDFLARE_TURN_API_TOKEN=
+# TURN_API_BASE=https://rtc.live.cloudflare.com/v1/turn
+# Optional: limit browser access to one trusted origin. Android does not need CORS.
+# ALLOWED_ORIGIN=https://unora.app

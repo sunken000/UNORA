@@ -1,0 +1,15 @@
+.gradle/
+.kotlin/
+.gradle-bootstrap/
+**/build/
+local.properties
+*.jks
+*.keystore
+edge/node_modules/
+edge/.wrangler/
+edge/.dev.vars
+*.apk
+*.aab
+**/build/
+.gradle/
+local.properties
