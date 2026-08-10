@@ -43,17 +43,17 @@ jobs:
       - name: Build debug APK
         run: ./gradlew assembleDebug
       - name: Commit applied capture fix
-        if: steps.patch.outputs.applied == 'true' && github.event_name == 'push'
+        if: github.event_name == 'push' && steps.patch.outputs.applied == 'true'
         shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "fix: stabilize full-screen media projection"
-          git push
+          git commit -m "fix: restore app screen sharing safely"
+          git push origin HEAD:agent/fix-black-screen-renderer-lifecycle
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: unora-black-screen-fix-apk
+          name: unora-app-share-fix-apk
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
