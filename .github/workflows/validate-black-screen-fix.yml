@@ -29,8 +29,8 @@ jobs:
         shell: bash
         run: |
           if [ -f .agent/capture-stability.patch ]; then
-            git apply --check .agent/capture-stability.patch
-            git apply .agent/capture-stability.patch
+            git apply --recount --check .agent/capture-stability.patch
+            git apply --recount .agent/capture-stability.patch
             rm -rf .agent
             echo "applied=true" >> "$GITHUB_OUTPUT"
           else
