@@ -15,6 +15,13 @@ import org.webrtc.audio.JavaAudioDeviceModule
 /** Owns native WebRTC resources for the duration of a party. */
 class WebRtcFactory(context: Context) : AutoCloseable {
     val eglBase: EglBase = EglBase.create()
+    /**
+     * Keep the exact same wrapper object for the shared EGL context for the factory lifetime.
+     * Some EglBase implementations can return a fresh Context wrapper from repeated property
+     * access, which is a bad Compose identity key even though it represents the same native EGL
+     * context.
+     */
+    val eglContext: EglBase.Context = eglBase.eglBaseContext
     val factory: PeerConnectionFactory
     /** Receives PCM solely from AudioPlaybackCapture, never a microphone. */
     val playbackAudioInput = PlaybackAudioInput(context.applicationContext)
@@ -54,12 +61,12 @@ class WebRtcFactory(context: Context) : AutoCloseable {
             // the audio sender stayed healthy, but no useful video frames reached the viewer.
             .setVideoEncoderFactory(
                 DefaultVideoEncoderFactory(
-                    eglBase.eglBaseContext,
+                    eglContext,
                     /* enableIntelVp8Encoder = */ true,
                     /* enableH264HighProfile = */ true,
                 ),
             )
-            .setVideoDecoderFactory(DefaultVideoDecoderFactory(eglBase.eglBaseContext))
+            .setVideoDecoderFactory(DefaultVideoDecoderFactory(eglContext))
             .createPeerConnectionFactory()
         audioSource = factory.createAudioSource(mediaAudioConstraints())
         playbackAudioTrack = factory.createAudioTrack("unora-playback-audio", audioSource)
