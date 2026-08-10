@@ -24,13 +24,126 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
-      - name: Apply capture stability patch
+      - name: Apply app-share compatibility fix
         id: patch
         shell: bash
         run: |
           if [ -f .agent/capture-stability.patch ]; then
-            git apply --recount --check .agent/capture-stability.patch
-            git apply --recount .agent/capture-stability.patch
+            python3 <<'PY'
+          from pathlib import Path
+
+          main = Path("app/src/main/java/app/unora/MainActivity.kt")
+          text = main.read_text()
+          old = '''        val captureIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+              // App-window projection can stop producing frames while the selected app is fully
+              // hidden and may move UNORA to the background. Full-display capture is deterministic
+              // for a watch party: the user can switch apps normally after sharing starts.
+              manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
+          } else {
+              manager.createScreenCaptureIntent()
+          }
+          '''
+          new = '''        val captureIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+              // Preserve both Android 14+ choices. createConfigForDefaultDisplay() opts out of
+              // single-app sharing; visibility changes are handled by ScreenCaptureManager.
+              manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForUserChoice())
+          } else {
+              manager.createScreenCaptureIntent()
+          }
+          '''
+          if old not in text:
+              raise SystemExit("MainActivity projection block not found")
+          main.write_text(text.replace(old, new, 1))
+
+          screen = Path("app/src/main/java/app/unora/capture/ScreenCaptureManager.kt")
+          text = screen.read_text()
+
+          replacements = [
+              (
+                  '''    private var capturedFrameCount = 0L
+              private var startupRecoveryAttempted = false
+              private val startupRecovery = Runnable(::recoverCaptureSurfaceIfNeeded)
+              ''',
+                  '''    private var capturedFrameCount = 0L
+              private var startupRecoveryAttempted = false
+              private var capturedContentVisible: Boolean? = null
+              private val startupRecovery = Runnable(::recoverCaptureSurfaceIfNeeded)
+              ''',
+              ),
+              (
+                  '''                override fun onCapturedContentResize(width: Int, height: Int) {
+                      mainHandler.post {
+                          val (newWidth, newHeight) = captureSize(width, height)
+                          applyCaptureFormat(newWidth, newHeight)
+                      }
+                  }
+
+                  override fun onStop() {
+              ''',
+                  '''                override fun onCapturedContentResize(width: Int, height: Int) {
+                      mainHandler.post {
+                          val (newWidth, newHeight) = captureSize(width, height)
+                          applyCaptureFormat(newWidth, newHeight)
+                      }
+                  }
+
+                  override fun onCapturedContentVisibilityChanged(isVisible: Boolean) {
+                      mainHandler.post {
+                          capturedContentVisible = isVisible
+                          Log.i(TAG, "capturedContentVisible=$isVisible")
+                          if (isVisible && capturedFrameCount == 0L && !startupRecoveryAttempted) {
+                              mainHandler.removeCallbacks(startupRecovery)
+                              mainHandler.postDelayed(startupRecovery, VISIBLE_RECOVERY_DELAY_MS)
+                          }
+                      }
+                  }
+
+                  override fun onStop() {
+              ''',
+              ),
+              (
+                  '''        capturedFrameCount = 0L
+              startupRecoveryAttempted = false
+              onStateChanged(state)
+              ''',
+                  '''        capturedFrameCount = 0L
+              startupRecoveryAttempted = false
+              capturedContentVisible = null
+              onStateChanged(state)
+              ''',
+              ),
+              (
+                  '''        if (capturedFrameCount > 0L || startupRecoveryAttempted || captureWidth <= 0 || captureHeight <= 0) return
+              startupRecoveryAttempted = true
+              ''',
+                  '''        if (capturedFrameCount > 0L || startupRecoveryAttempted || captureWidth <= 0 || captureHeight <= 0) return
+              // A single-app projection can intentionally stop producing frames while the selected
+              // app is fully covered. Do not treat that platform visibility state as capture failure.
+              if (capturedContentVisible == false) {
+                  Log.i(TAG, "capture recovery deferred: selected app is not visible")
+                  mainHandler.postDelayed(startupRecovery, HIDDEN_CONTENT_RECHECK_MS)
+                  return
+              }
+              startupRecoveryAttempted = true
+              ''',
+              ),
+              (
+                  '''        const val TARGET_FPS = 24
+              const val STARTUP_RECOVERY_DELAY_MS = 2_500L
+              ''',
+                  '''        const val TARGET_FPS = 24
+              const val STARTUP_RECOVERY_DELAY_MS = 2_500L
+              const val VISIBLE_RECOVERY_DELAY_MS = 900L
+              const val HIDDEN_CONTENT_RECHECK_MS = 1_000L
+              ''',
+              ),
+          ]
+          for old, new in replacements:
+              if old not in text:
+                  raise SystemExit("ScreenCaptureManager replacement block not found")
+              text = text.replace(old, new, 1)
+          screen.write_text(text)
+          PY
             rm -rf .agent
             echo "applied=true" >> "$GITHUB_OUTPUT"
           else
@@ -42,7 +155,7 @@ jobs:
         run: ./gradlew testDebugUnitTest
       - name: Build debug APK
         run: ./gradlew assembleDebug
-      - name: Commit applied capture fix
+      - name: Commit applied app-share fix
         if: github.event_name == 'push' && steps.patch.outputs.applied == 'true'
         shell: bash
         run: |
