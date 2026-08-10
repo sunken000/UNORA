@@ -34,114 +34,79 @@ jobs:
 
           main = Path("app/src/main/java/app/unora/MainActivity.kt")
           text = main.read_text()
-          old = '''        val captureIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-              // App-window projection can stop producing frames while the selected app is fully
-              // hidden and may move UNORA to the background. Full-display capture is deterministic
-              // for a watch party: the user can switch apps normally after sharing starts.
-              manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
-          } else {
-              manager.createScreenCaptureIntent()
-          }
-          '''
-          new = '''        val captureIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-              // Preserve both Android 14+ choices. createConfigForDefaultDisplay() opts out of
-              // single-app sharing; visibility changes are handled by ScreenCaptureManager.
-              manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForUserChoice())
-          } else {
-              manager.createScreenCaptureIntent()
-          }
-          '''
-          if old not in text:
-              raise SystemExit("MainActivity projection block not found")
-          main.write_text(text.replace(old, new, 1))
+          old_call = "MediaProjectionConfig.createConfigForDefaultDisplay()"
+          new_call = "MediaProjectionConfig.createConfigForUserChoice()"
+          if old_call not in text:
+              raise SystemExit("default-display projection call not found")
+          text = text.replace(old_call, new_call, 1)
+          text = text.replace(
+              "// App-window projection can stop producing frames while the selected app is fully\n"
+              "            // hidden and may move UNORA to the background. Full-display capture is deterministic\n"
+              "            // for a watch party: the user can switch apps normally after sharing starts.",
+              "// Keep both Android 14+ projection choices available. App-window visibility\n"
+              "            // changes are handled by ScreenCaptureManager instead of disabling the feature.",
+              1,
+          )
+          main.write_text(text)
 
           screen = Path("app/src/main/java/app/unora/capture/ScreenCaptureManager.kt")
           text = screen.read_text()
 
-          replacements = [
-              (
-                  '''    private var capturedFrameCount = 0L
-              private var startupRecoveryAttempted = false
-              private val startupRecovery = Runnable(::recoverCaptureSurfaceIfNeeded)
-              ''',
-                  '''    private var capturedFrameCount = 0L
-              private var startupRecoveryAttempted = false
-              private var capturedContentVisible: Boolean? = null
-              private val startupRecovery = Runnable(::recoverCaptureSurfaceIfNeeded)
-              ''',
-              ),
-              (
-                  '''                override fun onCapturedContentResize(width: Int, height: Int) {
-                      mainHandler.post {
-                          val (newWidth, newHeight) = captureSize(width, height)
-                          applyCaptureFormat(newWidth, newHeight)
-                      }
-                  }
-
-                  override fun onStop() {
-              ''',
-                  '''                override fun onCapturedContentResize(width: Int, height: Int) {
-                      mainHandler.post {
-                          val (newWidth, newHeight) = captureSize(width, height)
-                          applyCaptureFormat(newWidth, newHeight)
-                      }
-                  }
-
-                  override fun onCapturedContentVisibilityChanged(isVisible: Boolean) {
-                      mainHandler.post {
-                          capturedContentVisible = isVisible
-                          Log.i(TAG, "capturedContentVisible=$isVisible")
-                          if (isVisible && capturedFrameCount == 0L && !startupRecoveryAttempted) {
-                              mainHandler.removeCallbacks(startupRecovery)
-                              mainHandler.postDelayed(startupRecovery, VISIBLE_RECOVERY_DELAY_MS)
-                          }
-                      }
-                  }
-
-                  override fun onStop() {
-              ''',
-              ),
-              (
-                  '''        capturedFrameCount = 0L
-              startupRecoveryAttempted = false
-              onStateChanged(state)
-              ''',
-                  '''        capturedFrameCount = 0L
-              startupRecoveryAttempted = false
-              capturedContentVisible = null
-              onStateChanged(state)
-              ''',
-              ),
-              (
-                  '''        if (capturedFrameCount > 0L || startupRecoveryAttempted || captureWidth <= 0 || captureHeight <= 0) return
-              startupRecoveryAttempted = true
-              ''',
-                  '''        if (capturedFrameCount > 0L || startupRecoveryAttempted || captureWidth <= 0 || captureHeight <= 0) return
-              // A single-app projection can intentionally stop producing frames while the selected
-              // app is fully covered. Do not treat that platform visibility state as capture failure.
-              if (capturedContentVisible == false) {
-                  Log.i(TAG, "capture recovery deferred: selected app is not visible")
-                  mainHandler.postDelayed(startupRecovery, HIDDEN_CONTENT_RECHECK_MS)
-                  return
-              }
-              startupRecoveryAttempted = true
-              ''',
-              ),
-              (
-                  '''        const val TARGET_FPS = 24
-              const val STARTUP_RECOVERY_DELAY_MS = 2_500L
-              ''',
-                  '''        const val TARGET_FPS = 24
-              const val STARTUP_RECOVERY_DELAY_MS = 2_500L
-              const val VISIBLE_RECOVERY_DELAY_MS = 900L
-              const val HIDDEN_CONTENT_RECHECK_MS = 1_000L
-              ''',
-              ),
-          ]
-          for old, new in replacements:
+          def replace_once(old, new, label):
+              global text
               if old not in text:
-                  raise SystemExit("ScreenCaptureManager replacement block not found")
+                  raise SystemExit(f"{label} not found")
               text = text.replace(old, new, 1)
+
+          replace_once(
+              "    private var startupRecoveryAttempted = false\n    private val startupRecovery = Runnable(::recoverCaptureSurfaceIfNeeded)",
+              "    private var startupRecoveryAttempted = false\n    private var capturedContentVisible: Boolean? = null\n    private val startupRecovery = Runnable(::recoverCaptureSurfaceIfNeeded)",
+              "capture visibility field anchor",
+          )
+
+          replace_once(
+              "\n\n                override fun onStop() {",
+              "\n\n                override fun onCapturedContentVisibilityChanged(isVisible: Boolean) {\n"
+              "                    mainHandler.post {\n"
+              "                        capturedContentVisible = isVisible\n"
+              "                        Log.i(TAG, \"capturedContentVisible=$isVisible\")\n"
+              "                        if (isVisible && capturedFrameCount == 0L && !startupRecoveryAttempted) {\n"
+              "                            mainHandler.removeCallbacks(startupRecovery)\n"
+              "                            mainHandler.postDelayed(startupRecovery, VISIBLE_RECOVERY_DELAY_MS)\n"
+              "                        }\n"
+              "                    }\n"
+              "                }\n\n"
+              "                override fun onStop() {",
+              "visibility callback anchor",
+          )
+
+          replace_once(
+              "        capturedFrameCount = 0L\n        startupRecoveryAttempted = false\n        onStateChanged(state)",
+              "        capturedFrameCount = 0L\n        startupRecoveryAttempted = false\n        capturedContentVisible = null\n        onStateChanged(state)",
+              "capture reset anchor",
+          )
+
+          replace_once(
+              "        if (capturedFrameCount > 0L || startupRecoveryAttempted || captureWidth <= 0 || captureHeight <= 0) return\n        startupRecoveryAttempted = true",
+              "        if (capturedFrameCount > 0L || startupRecoveryAttempted || captureWidth <= 0 || captureHeight <= 0) return\n"
+              "        // App-window projection may intentionally pause frames while its window is hidden.\n"
+              "        if (capturedContentVisible == false) {\n"
+              "            Log.i(TAG, \"capture recovery deferred: selected app is not visible\")\n"
+              "            mainHandler.postDelayed(startupRecovery, HIDDEN_CONTENT_RECHECK_MS)\n"
+              "            return\n"
+              "        }\n"
+              "        startupRecoveryAttempted = true",
+              "capture recovery anchor",
+          )
+
+          replace_once(
+              "        const val STARTUP_RECOVERY_DELAY_MS = 2_500L",
+              "        const val STARTUP_RECOVERY_DELAY_MS = 2_500L\n"
+              "        const val VISIBLE_RECOVERY_DELAY_MS = 900L\n"
+              "        const val HIDDEN_CONTENT_RECHECK_MS = 1_000L",
+              "capture constants anchor",
+          )
+
           screen.write_text(text)
           PY
             rm -rf .agent
