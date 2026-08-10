@@ -8,9 +8,12 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 
 /** Foreground-service owner for a visibly active MediaProjection session. */
@@ -19,10 +22,27 @@ class MediaProjectionService : Service() {
         when (intent?.action) {
             ACTION_STOP -> stopSharing()
             ACTION_START -> {
-                startForeground(NOTIFICATION_ID, createNotification())
-                val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
-                val resultData = intent.parcelableIntentExtra(EXTRA_RESULT_DATA)
-                if (resultData == null || MediaProjectionRuntime.start(resultCode, resultData) == null) {
+                try {
+                    ServiceCompat.startForeground(
+                        this,
+                        NOTIFICATION_ID,
+                        createNotification(),
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+                        } else {
+                            0
+                        },
+                    )
+                    val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
+                    val resultData = intent.parcelableIntentExtra(EXTRA_RESULT_DATA)
+                    if (resultData == null || MediaProjectionRuntime.start(resultCode, resultData) == null) {
+                        Log.e(TAG, "MediaProjection failed to start after foreground promotion")
+                        stopSharing()
+                    }
+                } catch (error: Throwable) {
+                    // A service exception is process-fatal if it escapes onStartCommand. Keep a
+                    // rejected projection/FGS transition contained and return the UI to idle.
+                    Log.e(TAG, "MediaProjection foreground service failed", error)
                     stopSharing()
                 }
             }
@@ -31,15 +51,16 @@ class MediaProjectionService : Service() {
     }
 
     override fun onDestroy() {
-        MediaProjectionRuntime.stop()
+        runCatching { MediaProjectionRuntime.stop() }
+            .onFailure { Log.w(TAG, "projection cleanup failed", it) }
         super.onDestroy()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     private fun stopSharing() {
-        MediaProjectionRuntime.stop()
-        stopForeground(STOP_FOREGROUND_REMOVE)
+        runCatching { MediaProjectionRuntime.stop() }
+        runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
         stopSelf()
     }
 
@@ -69,6 +90,7 @@ class MediaProjectionService : Service() {
         else @Suppress("DEPRECATION") (getParcelableExtra(key) as? Intent)
 
     companion object {
+        private const val TAG = "UnoraProjectionService"
         private const val CHANNEL_ID = "unora_screen_sharing"
         private const val NOTIFICATION_ID = 2201
         private const val ACTION_START = "app.unora.capture.START"
@@ -82,11 +104,16 @@ class MediaProjectionService : Service() {
                 .setAction(ACTION_START)
                 .putExtra(EXTRA_RESULT_CODE, resultCode)
                 .putExtra(EXTRA_RESULT_DATA, resultData)
-            ContextCompat.startForegroundService(context, intent)
+            try {
+                ContextCompat.startForegroundService(context, intent)
+            } catch (error: Throwable) {
+                Log.e(TAG, "Unable to launch MediaProjection service", error)
+                MediaProjectionRuntime.stop()
+            }
         }
 
         fun stop(context: Context) {
-            context.stopService(Intent(context, MediaProjectionService::class.java))
+            runCatching { context.stopService(Intent(context, MediaProjectionService::class.java)) }
         }
     }
 }
