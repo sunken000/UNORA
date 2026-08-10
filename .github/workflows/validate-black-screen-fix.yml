@@ -30,49 +30,30 @@ jobs:
         run: |
           python3 <<'PY'
           from pathlib import Path
+          import re
 
           changed = False
 
           main = Path('app/src/main/java/app/unora/MainActivity.kt')
           text = main.read_text()
-          old = '''    override fun onUserLeaveHint() {
+          pattern = r'''    override fun onUserLeaveHint\(\) \{.*?\n    \}\n\n    override fun onDestroy\(\) \{'''
+          replacement = '''    override fun onUserLeaveHint() {
               super.onUserLeaveHint()
-              val partyActive = partyViewModel.state.value.partyId != null &&
-                  partyViewModel.state.value.phase !in setOf(PartyPhase.Idle, PartyPhase.Ended)
-              if (partyActive && overlayPermissionGranted && !projectionFlowActive &&
-                  pendingNotificationAction == null && !suppressAutoOverlay && !isClosing
-              ) {
-                  ChatOverlayService.start(this)
-              }
+              // Android sends this callback when the projection selector switches to the chosen
+              // app. Starting another FGS here is background work and can terminate the process
+              // on recent Android versions. Floating chat starts only from explicit minimize.
           }
-          '''
-          new = '''    override fun onUserLeaveHint() {
-              super.onUserLeaveHint()
-              // Do not auto-start a second foreground service when Android backgrounds UNORA
-              // after screen-share consent. The overlay remains available through explicit
-              // minimize, which is a direct user action and therefore satisfies FGS policy.
-          }
-          '''
-          if old in text:
-              main.write_text(text.replace(old, new, 1))
+
+          override fun onDestroy() {'''
+          updated, count = re.subn(pattern, replacement, text, count=1, flags=re.S)
+          if count == 1 and updated != text:
+              main.write_text(updated)
               changed = True
 
           overlay = Path('app/src/main/java/app/unora/overlay/ChatOverlayService.kt')
           text = overlay.read_text()
-          old = '''    override fun onCreate() {
-              super.onCreate()
-              createChannel()
-              startForeground(NOTIFICATION_ID, notification())
-              if (!Settings.canDrawOverlays(this) || ChatOverlayRuntime.partyState == null) {
-                  stopSelf()
-                  return
-              }
-              windowManager = getSystemService(WindowManager::class.java)
-              showBubble()
-              observeParty()
-          }
-          '''
-          new = '''    override fun onCreate() {
+          pattern = r'''    override fun onCreate\(\) \{.*?\n    \}\n\n    override fun onStartCommand\('''
+          replacement = '''    override fun onCreate() {
               super.onCreate()
               try {
                   createChannel()
@@ -85,15 +66,17 @@ jobs:
                   showBubble()
                   observeParty()
               } catch (error: Throwable) {
-                  // An exception escaping Service.onCreate terminates the app process. Overlay is
-                  // optional, so contain OEM/FGS/window-manager failures instead.
+                  // An exception escaping Service.onCreate is process-fatal. The floating overlay
+                  // is optional, so contain OEM/foreground-service/window-manager failures.
                   Log.e(TAG, "overlay service initialization failed", error)
                   stopSelf()
               }
           }
-          '''
-          if old in text:
-              overlay.write_text(text.replace(old, new, 1))
+
+          override fun onStartCommand('''
+          updated, count = re.subn(pattern, replacement, text, count=1, flags=re.S)
+          if count == 1 and updated != text:
+              overlay.write_text(updated)
               changed = True
 
           Path('/tmp/hardened').write_text('true' if changed else 'false')
