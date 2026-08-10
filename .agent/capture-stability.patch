@@ -1,0 +1,73 @@
+diff --git a/app/src/main/java/app/unora/MainActivity.kt b/app/src/main/java/app/unora/MainActivity.kt
+--- a/app/src/main/java/app/unora/MainActivity.kt
++++ b/app/src/main/java/app/unora/MainActivity.kt
+@@
+-        val captureIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+-            // App-window projection can stop producing frames while the selected app is fully
+-            // hidden and may move UNORA to the background. Full-display capture is deterministic
+-            // for a watch party: the user can switch apps normally after sharing starts.
+-            manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
+-        } else {
+-            manager.createScreenCaptureIntent()
+-        }
++        val captureIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
++            // Keep both Android 14+ projection modes available. App-window sharing is a native
++            // MediaProjection feature; forcing createConfigForDefaultDisplay() disables it in the
++            // system consent UI. Visibility changes are handled by ScreenCaptureManager instead.
++            manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForUserChoice())
++        } else {
++            manager.createScreenCaptureIntent()
++        }
+         projectionLauncher.launch(captureIntent)
+     }
+diff --git a/app/src/main/java/app/unora/capture/ScreenCaptureManager.kt b/app/src/main/java/app/unora/capture/ScreenCaptureManager.kt
+--- a/app/src/main/java/app/unora/capture/ScreenCaptureManager.kt
++++ b/app/src/main/java/app/unora/capture/ScreenCaptureManager.kt
+@@
+     private var capturedFrameCount = 0L
+     private var startupRecoveryAttempted = false
++    private var capturedContentVisible: Boolean? = null
+     private val startupRecovery = Runnable(::recoverCaptureSurfaceIfNeeded)
+@@
+                 override fun onCapturedContentResize(width: Int, height: Int) {
+                     mainHandler.post {
+                         val (newWidth, newHeight) = captureSize(width, height)
+                         applyCaptureFormat(newWidth, newHeight)
+                     }
+                 }
++
++                override fun onCapturedContentVisibilityChanged(isVisible: Boolean) {
++                    mainHandler.post {
++                        capturedContentVisible = isVisible
++                        Log.i(TAG, "capturedContentVisible=$isVisible")
++                        if (isVisible && capturedFrameCount == 0L && !startupRecoveryAttempted) {
++                            mainHandler.removeCallbacks(startupRecovery)
++                            mainHandler.postDelayed(startupRecovery, VISIBLE_RECOVERY_DELAY_MS)
++                        }
++                    }
++                }
+@@
+         capturedFrameCount = 0L
+         startupRecoveryAttempted = false
++        capturedContentVisible = null
+         onStateChanged(state)
+@@
+     private fun recoverCaptureSurfaceIfNeeded() {
+         val activeCapturer = capturer ?: return
+         if (capturedFrameCount > 0L || startupRecoveryAttempted || captureWidth <= 0 || captureHeight <= 0) return
++        // With Android app-window sharing, zero frames while the selected app is completely
++        // covered is expected. Wait until the platform reports that the captured region is
++        // visible before attempting the one-shot surface rebind.
++        if (capturedContentVisible == false) {
++            Log.i(TAG, "capture recovery deferred: selected app is not visible")
++            mainHandler.postDelayed(startupRecovery, HIDDEN_CONTENT_RECHECK_MS)
++            return
++        }
+         startupRecoveryAttempted = true
+@@
+         const val TARGET_FPS = 24
+         const val STARTUP_RECOVERY_DELAY_MS = 2_500L
++        const val VISIBLE_RECOVERY_DELAY_MS = 900L
++        const val HIDDEN_CONTENT_RECHECK_MS = 1_000L
+     }
+ }
