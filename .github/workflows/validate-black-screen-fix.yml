@@ -25,3 +25,9 @@ jobs:
         run: ./gradlew testDebugUnitTest
       - name: Build debug APK
         run: ./gradlew assembleDebug
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: unora-black-screen-fix-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
