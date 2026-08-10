@@ -345,10 +345,9 @@ class MainActivity : ComponentActivity() {
         pendingProjectionLaunch = true
         val manager = getSystemService(MediaProjectionManager::class.java)
         val captureIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            // App-window projection can stop producing frames while the selected app is fully
-            // hidden and may move UNORA to the background. Full-display capture is deterministic
-            // for a watch party: the user can switch apps normally after sharing starts.
-            manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
+            // Keep both Android 14+ projection choices available. App-window visibility
+            // changes are handled by ScreenCaptureManager instead of disabling the feature.
+            manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForUserChoice())
         } else {
             manager.createScreenCaptureIntent()
         }

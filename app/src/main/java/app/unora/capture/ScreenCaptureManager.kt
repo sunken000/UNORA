@@ -35,6 +35,7 @@ class ScreenCaptureManager(
     private var captureHeight = 0
     private var capturedFrameCount = 0L
     private var startupRecoveryAttempted = false
+    private var capturedContentVisible: Boolean? = null
     private val startupRecovery = Runnable(::recoverCaptureSurfaceIfNeeded)
     var videoTrack: VideoTrack? = null
         private set
@@ -55,6 +56,17 @@ class ScreenCaptureManager(
                     mainHandler.post {
                         val (newWidth, newHeight) = captureSize(width, height)
                         applyCaptureFormat(newWidth, newHeight)
+                    }
+                }
+
+                override fun onCapturedContentVisibilityChanged(isVisible: Boolean) {
+                    mainHandler.post {
+                        capturedContentVisible = isVisible
+                        Log.i(TAG, "capturedContentVisible=$isVisible")
+                        if (isVisible && capturedFrameCount == 0L && !startupRecoveryAttempted) {
+                            mainHandler.removeCallbacks(startupRecovery)
+                            mainHandler.postDelayed(startupRecovery, VISIBLE_RECOVERY_DELAY_MS)
+                        }
                     }
                 }
 
@@ -158,6 +170,7 @@ class ScreenCaptureManager(
         captureHeight = 0
         capturedFrameCount = 0L
         startupRecoveryAttempted = false
+        capturedContentVisible = null
         onStateChanged(state)
     }
 
@@ -183,6 +196,12 @@ class ScreenCaptureManager(
     private fun recoverCaptureSurfaceIfNeeded() {
         val activeCapturer = capturer ?: return
         if (capturedFrameCount > 0L || startupRecoveryAttempted || captureWidth <= 0 || captureHeight <= 0) return
+        // App-window projection may intentionally pause frames while its window is hidden.
+        if (capturedContentVisible == false) {
+            Log.i(TAG, "capture recovery deferred: selected app is not visible")
+            mainHandler.postDelayed(startupRecovery, HIDDEN_CONTENT_RECHECK_MS)
+            return
+        }
         startupRecoveryAttempted = true
         Log.w(TAG, "no frames after startup; rebinding capture surface ${captureWidth}x$captureHeight")
         runCatching { activeCapturer.changeCaptureFormat(captureWidth, captureHeight, TARGET_FPS) }
@@ -210,5 +229,7 @@ class ScreenCaptureManager(
         const val VIDEO_TRACK_ID = "unora-screen-video"
         const val TARGET_FPS = 24
         const val STARTUP_RECOVERY_DELAY_MS = 2_500L
+        const val VISIBLE_RECOVERY_DELAY_MS = 900L
+        const val HIDDEN_CONTENT_RECHECK_MS = 1_000L
     }
 }
