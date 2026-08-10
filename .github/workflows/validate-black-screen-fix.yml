@@ -9,25 +9,114 @@ on:
       - main
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
+      - name: Harden background lifecycle
+        id: harden
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          changed = False
+
+          main = Path('app/src/main/java/app/unora/MainActivity.kt')
+          text = main.read_text()
+          old = '''    override fun onUserLeaveHint() {
+              super.onUserLeaveHint()
+              val partyActive = partyViewModel.state.value.partyId != null &&
+                  partyViewModel.state.value.phase !in setOf(PartyPhase.Idle, PartyPhase.Ended)
+              if (partyActive && overlayPermissionGranted && !projectionFlowActive &&
+                  pendingNotificationAction == null && !suppressAutoOverlay && !isClosing
+              ) {
+                  ChatOverlayService.start(this)
+              }
+          }
+          '''
+          new = '''    override fun onUserLeaveHint() {
+              super.onUserLeaveHint()
+              // Do not auto-start a second foreground service when Android backgrounds UNORA
+              // after screen-share consent. The overlay remains available through explicit
+              // minimize, which is a direct user action and therefore satisfies FGS policy.
+          }
+          '''
+          if old in text:
+              main.write_text(text.replace(old, new, 1))
+              changed = True
+
+          overlay = Path('app/src/main/java/app/unora/overlay/ChatOverlayService.kt')
+          text = overlay.read_text()
+          old = '''    override fun onCreate() {
+              super.onCreate()
+              createChannel()
+              startForeground(NOTIFICATION_ID, notification())
+              if (!Settings.canDrawOverlays(this) || ChatOverlayRuntime.partyState == null) {
+                  stopSelf()
+                  return
+              }
+              windowManager = getSystemService(WindowManager::class.java)
+              showBubble()
+              observeParty()
+          }
+          '''
+          new = '''    override fun onCreate() {
+              super.onCreate()
+              try {
+                  createChannel()
+                  startForeground(NOTIFICATION_ID, notification())
+                  if (!Settings.canDrawOverlays(this) || ChatOverlayRuntime.partyState == null) {
+                      stopSelf()
+                      return
+                  }
+                  windowManager = getSystemService(WindowManager::class.java)
+                  showBubble()
+                  observeParty()
+              } catch (error: Throwable) {
+                  // An exception escaping Service.onCreate terminates the app process. Overlay is
+                  // optional, so contain OEM/FGS/window-manager failures instead.
+                  Log.e(TAG, "overlay service initialization failed", error)
+                  stopSelf()
+              }
+          }
+          '''
+          if old in text:
+              overlay.write_text(text.replace(old, new, 1))
+              changed = True
+
+          Path('/tmp/hardened').write_text('true' if changed else 'false')
+          PY
+          echo "changed=$(cat /tmp/hardened)" >> "$GITHUB_OUTPUT"
       - name: Make Gradle executable
         run: chmod +x gradlew
       - name: Unit tests
         run: ./gradlew testDebugUnitTest
       - name: Build debug APK
         run: ./gradlew assembleDebug
+      - name: Commit lifecycle hardening
+        if: github.event_name == 'push' && steps.harden.outputs.changed == 'true'
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app/src/main/java/app/unora/MainActivity.kt app/src/main/java/app/unora/overlay/ChatOverlayService.kt
+          git commit -m "fix: prevent background overlay from terminating capture"
+          git push origin HEAD:agent/fix-black-screen-renderer-lifecycle
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: unora-app-share-fix-apk
+          name: unora-capture-v3-apk
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
