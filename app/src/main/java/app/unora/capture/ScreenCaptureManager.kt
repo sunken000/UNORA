@@ -34,6 +34,8 @@ class ScreenCaptureManager(
     private var captureWidth = 0
     private var captureHeight = 0
     private var capturedFrameCount = 0L
+    private var startupRecoveryAttempted = false
+    private val startupRecovery = Runnable(::recoverCaptureSurfaceIfNeeded)
     var videoTrack: VideoTrack? = null
         private set
 
@@ -47,7 +49,7 @@ class ScreenCaptureManager(
         onStateChanged(State.STARTING)
         return try {
             val source = webRtcFactory.factory.createVideoSource(true)
-            val helper = SurfaceTextureHelper.create("unora-screen-capture", webRtcFactory.eglBase.eglBaseContext)
+            val helper = SurfaceTextureHelper.create("unora-screen-capture", webRtcFactory.eglContext)
             val screenCapturer = ScreenCapturerAndroid(resultData, object : MediaProjection.Callback() {
                 override fun onCapturedContentResize(width: Int, height: Int) {
                     mainHandler.post {
@@ -85,6 +87,7 @@ class ScreenCaptureManager(
 
                     override fun onFrameCaptured(frame: VideoFrame) {
                         capturedFrameCount++
+                        if (capturedFrameCount == 1L) mainHandler.removeCallbacks(startupRecovery)
                         if (capturedFrameCount == 1L || capturedFrameCount % 240L == 0L) {
                             Log.i(
                                 TAG,
@@ -109,6 +112,9 @@ class ScreenCaptureManager(
             val track = webRtcFactory.factory.createVideoTrack(VIDEO_TRACK_ID, source)
             track.setEnabled(true)
             videoTrack = track
+            startupRecoveryAttempted = false
+            mainHandler.removeCallbacks(startupRecovery)
+            mainHandler.postDelayed(startupRecovery, STARTUP_RECOVERY_DELAY_MS)
 
             // ScreenCapturerAndroid owns the one-use MediaProjection token. Reusing its active
             // projection is valid; calling getMediaProjection a second time is not (Android 14+).
@@ -137,6 +143,7 @@ class ScreenCaptureManager(
     private fun stopInternal(state: State) {
         val hadResources = capturer != null || videoTrack != null || videoSource != null || textureHelper != null
         if (!hadResources && state == State.STOPPED) return
+        mainHandler.removeCallbacks(startupRecovery)
         webRtcFactory.playbackAudioInput.stop()
         runCatching { capturer?.stopCapture() }
         capturer?.dispose()
@@ -150,6 +157,7 @@ class ScreenCaptureManager(
         captureWidth = 0
         captureHeight = 0
         capturedFrameCount = 0L
+        startupRecoveryAttempted = false
         onStateChanged(state)
     }
 
@@ -163,6 +171,22 @@ class ScreenCaptureManager(
         captureWidth = width
         captureHeight = height
         runCatching { capturer?.changeCaptureFormat(width, height, TARGET_FPS) }
+    }
+
+    /**
+     * Some OEMs create the MediaProjection VirtualDisplay before the SurfaceTexture is fully
+     * attached. A single same-size resize rebinds the existing surface on Android 12+ without
+     * consuming another MediaProjection token. This is deliberately one-shot: repeated same-size
+     * resizing can itself starve Samsung's virtual display pipeline.
+     */
+    @Synchronized
+    private fun recoverCaptureSurfaceIfNeeded() {
+        val activeCapturer = capturer ?: return
+        if (capturedFrameCount > 0L || startupRecoveryAttempted || captureWidth <= 0 || captureHeight <= 0) return
+        startupRecoveryAttempted = true
+        Log.w(TAG, "no frames after startup; rebinding capture surface ${captureWidth}x$captureHeight")
+        runCatching { activeCapturer.changeCaptureFormat(captureWidth, captureHeight, TARGET_FPS) }
+            .onFailure { Log.e(TAG, "capture surface recovery failed", it) }
     }
 
     override fun close() = stop()
@@ -185,5 +209,6 @@ class ScreenCaptureManager(
         const val TAG = "UnoraVideoCapture"
         const val VIDEO_TRACK_ID = "unora-screen-video"
         const val TARGET_FPS = 24
+        const val STARTUP_RECOVERY_DELAY_MS = 2_500L
     }
 }

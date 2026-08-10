@@ -10,6 +10,7 @@ import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.media.projection.MediaProjectionManager
+import android.media.projection.MediaProjectionConfig
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -119,11 +120,6 @@ class MainActivity : ComponentActivity() {
         val data = result.data
         if (result.resultCode == Activity.RESULT_OK && data != null) {
             MediaProjectionService.start(this, result.resultCode, data)
-            window.decorView.postDelayed({
-                if (!hasWindowFocus() && overlayPermissionGranted && partyViewModel.state.value.partyId != null) {
-                    ChatOverlayService.start(this)
-                }
-            }, 700)
         } else {
             partyViewModel.sharingStopped()
         }
@@ -348,7 +344,15 @@ class MainActivity : ComponentActivity() {
         if (pendingProjectionLaunch) return
         pendingProjectionLaunch = true
         val manager = getSystemService(MediaProjectionManager::class.java)
-        projectionLauncher.launch(manager.createScreenCaptureIntent())
+        val captureIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            // App-window projection can stop producing frames while the selected app is fully
+            // hidden and may move UNORA to the background. Full-display capture is deterministic
+            // for a watch party: the user can switch apps normally after sharing starts.
+            manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
+        } else {
+            manager.createScreenCaptureIntent()
+        }
+        projectionLauncher.launch(captureIntent)
     }
 
     private fun handleCaptureState(captureState: ScreenCaptureManager.State) {

@@ -14,6 +14,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.IBinder
 import android.provider.Settings
+import android.util.Log
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
@@ -399,13 +400,19 @@ class ChatOverlayService : Service() {
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     companion object {
+        private const val TAG = "UnoraChatOverlay"
         private const val CHANNEL_ID = "unora_floating_chat"
         private const val NOTIFICATION_ID = 2301
         private const val ACTION_STOP = "app.unora.overlay.STOP"
 
         fun start(context: Context) {
             if (!Settings.canDrawOverlays(context)) return
-            ContextCompat.startForegroundService(context, Intent(context, ChatOverlayService::class.java))
+            // Android 12+ may reject a foreground-service launch once the activity has already
+            // transitioned to the background. This helper is also called from onUserLeaveHint;
+            // never let that policy exception terminate the app process.
+            runCatching {
+                ContextCompat.startForegroundService(context, Intent(context, ChatOverlayService::class.java))
+            }.onFailure { Log.w(TAG, "overlay foreground service start rejected", it) }
         }
 
         fun stop(context: Context) {
