@@ -3,24 +3,25 @@ package app.unora.ui.components
 import android.util.Log
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import org.webrtc.EglBase
+import org.webrtc.EglRenderer
 import org.webrtc.RendererCommon
 import org.webrtc.SurfaceViewRenderer
 import org.webrtc.VideoTrack
 
 /**
- * Displays a WebRTC video track with WebRTC's supported Android renderer.
+ * Displays a WebRTC video track with one SurfaceViewRenderer for the lifetime of this composition.
  *
- * The previous hand-written TextureView wrapper acknowledged a frame as soon as it was submitted
- * to EGL, even when Android had not displayed it. That made a permanently black surface look
- * "live" to the rest of the UI. SurfaceViewRenderer owns the surface lifecycle, reports the first
- * frame only after EGL renders it, and is the path exercised by upstream WebRTC on Android.
+ * A SurfaceView owns a native Surface whose creation/destruction is asynchronous relative to
+ * Compose. Recreating the renderer when a VideoTrack changes can therefore attach the new sink
+ * before Android has attached the new Surface, producing repeated "Dropping frame - No surface"
+ * and a permanently black player on affected devices. Keep the native view stable and move only
+ * the VideoTrack sink when WebRTC reconnects or replaces a receiver track.
  */
 @Composable
 fun WebRtcStreamSurface(
@@ -30,40 +31,13 @@ fun WebRtcStreamSurface(
     onFirstFrameRendered: () -> Unit = {},
     onFrameResolutionChanged: (width: Int, height: Int, rotation: Int) -> Unit = { _, _, _ -> },
 ) {
-    // AndroidView keeps the View returned by its first factory call while the composition node
-    // remains at the same position. Merely remembering a new renderer for a new track therefore
-    // routes frames into an object that has no Android Surface ("Dropping frame - No surface").
-    // Key the complete subtree so the old AndroidView is disposed and the replacement renderer is
-    // actually attached to the window whenever WebRTC publishes a different track.
-    key(track) {
-        TrackSurface(
-            track = track,
-            eglContext = eglContext,
-            modifier = modifier,
-            onFirstFrameRendered = onFirstFrameRendered,
-            onFrameResolutionChanged = onFrameResolutionChanged,
-        )
-    }
-}
-
-@Composable
-private fun TrackSurface(
-    track: VideoTrack?,
-    eglContext: EglBase.Context,
-    modifier: Modifier,
-    onFirstFrameRendered: () -> Unit,
-    onFrameResolutionChanged: (width: Int, height: Int, rotation: Int) -> Unit,
-) {
     val context = LocalContext.current
     val currentFirstFrameCallback = rememberUpdatedState(onFirstFrameRendered)
     val currentResolutionCallback = rememberUpdatedState(onFrameResolutionChanged)
-    // A SurfaceViewRenderer reports its first frame once per instance. Recreate it with the track
-    // so reconnecting cannot reuse a stale "first frame" state from the previous receiver.
-    // EglBase.eglBaseContext may return a fresh wrapper object for the same native EGL context.
-    // It must not be a remember key: the first-frame state update would otherwise replace this
-    // renderer immediately after it successfully drew, leaving the replacement without a surface.
-    // The enclosing track key is the renderer's intentional lifecycle boundary.
-    val renderer = remember {
+
+    // eglContext is stable for WebRtcFactory's lifetime. The renderer must not be keyed by track:
+    // AndroidView should retain the exact same SurfaceView and native Surface across renegotiation.
+    val renderer = remember(context, eglContext) {
         SurfaceViewRenderer(context).apply {
             setSecure(false)
             setZOrderOnTop(false)
@@ -72,33 +46,57 @@ private fun TrackSurface(
                 eglContext,
                 object : RendererCommon.RendererEvents {
                     override fun onFirstFrameRendered() {
-                        Log.i(TAG, "firstFrameRendered track=${track?.id()}")
-                        post { currentFirstFrameCallback.value.invoke() }
+                        Log.i(TAG, "rendererFirstFrame")
                     }
 
                     override fun onFrameResolutionChanged(width: Int, height: Int, rotation: Int) {
-                        Log.i(TAG, "frameResolution ${width}x$height rotation=$rotation track=${track?.id()}")
+                        Log.i(TAG, "frameResolution ${width}x$height rotation=$rotation")
                         post { currentResolutionCallback.value.invoke(width, height, rotation) }
                     }
                 },
             )
             setMirror(false)
             setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
-            setEnableHardwareScaler(true)
+            // WebRTC documents fixed-size SurfaceView scaling as potentially buggy on some devices.
+            // Layout-size surfaces are slightly less optimized but much safer across OEM compositors.
+            setEnableHardwareScaler(false)
             disableFpsReduction()
         }
     }
 
     DisposableEffect(track, renderer) {
-        renderer.clearImage()
-        track?.addSink(renderer)
-        onDispose {
-            runCatching { track?.removeSink(renderer) }
+        if (track == null) {
             renderer.clearImage()
+            return@DisposableEffect onDispose { }
+        }
+
+        // SurfaceViewRenderer's RendererEvents.onFirstFrameRendered is once per renderer, while the
+        // app needs confirmation for every replacement VideoTrack. EglRenderer.FrameListener is
+        // one-shot and is invoked from the render thread only after a frame reached the renderer's
+        // EGL path; with scale=0 it performs no bitmap readback. This preserves the stable Surface.
+        val renderedFrameListener = EglRenderer.FrameListener {
+            Log.i(TAG, "trackRendered track=${track.id()}")
+            renderer.post { currentFirstFrameCallback.value.invoke() }
+        }
+
+        renderer.clearImage()
+        renderer.addFrameListener(renderedFrameListener, 0f)
+        track.addSink(renderer)
+        Log.i(TAG, "sinkAttached track=${track.id()} renderer=${System.identityHashCode(renderer)}")
+
+        onDispose {
+            runCatching { track.removeSink(renderer) }
+            runCatching { renderer.removeFrameListener(renderedFrameListener) }
+            renderer.clearImage()
+            Log.i(TAG, "sinkDetached track=${track.id()} renderer=${System.identityHashCode(renderer)}")
         }
     }
+
     DisposableEffect(renderer) {
-        onDispose(renderer::release)
+        onDispose {
+            renderer.release()
+            Log.i(TAG, "rendererReleased renderer=${System.identityHashCode(renderer)}")
+        }
     }
 
     AndroidView(
