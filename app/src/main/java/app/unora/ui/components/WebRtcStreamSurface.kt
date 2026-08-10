@@ -35,9 +35,10 @@ fun WebRtcStreamSurface(
     val currentFirstFrameCallback = rememberUpdatedState(onFirstFrameRendered)
     val currentResolutionCallback = rememberUpdatedState(onFrameResolutionChanged)
 
-    // eglContext is stable for WebRtcFactory's lifetime. The renderer must not be keyed by track:
-    // AndroidView should retain the exact same SurfaceView and native Surface across renegotiation.
-    val renderer = remember(context, eglContext) {
+    // Deliberately do not key this remember with track or eglContext. EglBase implementations may
+    // return a fresh Context wrapper for the same native EGL context; the WebRtcFactory itself is
+    // stable for the Activity lifetime, so recreating this view from wrapper identity is harmful.
+    val renderer = remember(context) {
         SurfaceViewRenderer(context).apply {
             setSecure(false)
             setZOrderOnTop(false)
@@ -70,10 +71,10 @@ fun WebRtcStreamSurface(
             return@DisposableEffect onDispose { }
         }
 
-        // SurfaceViewRenderer's RendererEvents.onFirstFrameRendered is once per renderer, while the
-        // app needs confirmation for every replacement VideoTrack. EglRenderer.FrameListener is
-        // one-shot and is invoked from the render thread only after a frame reached the renderer's
-        // EGL path; with scale=0 it performs no bitmap readback. This preserves the stable Surface.
+        // RendererEvents.onFirstFrameRendered is once per renderer, while the app needs a fresh
+        // confirmation for every replacement VideoTrack. FrameListener is one-shot. In WebRTC's
+        // EGL path it is dispatched after the renderer has verified that an EGL surface exists;
+        // scale=0 avoids bitmap allocation/readback.
         val renderedFrameListener = EglRenderer.FrameListener {
             Log.i(TAG, "trackRendered track=${track.id()}")
             renderer.post { currentFirstFrameCallback.value.invoke() }
