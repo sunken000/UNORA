@@ -10,6 +10,7 @@ import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.media.projection.MediaProjectionManager
+import android.media.projection.MediaProjectionConfig
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -119,11 +120,6 @@ class MainActivity : ComponentActivity() {
         val data = result.data
         if (result.resultCode == Activity.RESULT_OK && data != null) {
             MediaProjectionService.start(this, result.resultCode, data)
-            window.decorView.postDelayed({
-                if (!hasWindowFocus() && overlayPermissionGranted && partyViewModel.state.value.partyId != null) {
-                    ChatOverlayService.start(this)
-                }
-            }, 700)
         } else {
             partyViewModel.sharingStopped()
         }
@@ -348,7 +344,14 @@ class MainActivity : ComponentActivity() {
         if (pendingProjectionLaunch) return
         pendingProjectionLaunch = true
         val manager = getSystemService(MediaProjectionManager::class.java)
-        projectionLauncher.launch(manager.createScreenCaptureIntent())
+        val captureIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            // Keep both Android 14+ projection choices available. App-window visibility
+            // changes are handled by ScreenCaptureManager instead of disabling the feature.
+            manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForUserChoice())
+        } else {
+            manager.createScreenCaptureIntent()
+        }
+        projectionLauncher.launch(captureIntent)
     }
 
     private fun handleCaptureState(captureState: ScreenCaptureManager.State) {
@@ -727,17 +730,13 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onUserLeaveHint() {
-        super.onUserLeaveHint()
-        val partyActive = partyViewModel.state.value.partyId != null &&
-            partyViewModel.state.value.phase !in setOf(PartyPhase.Idle, PartyPhase.Ended)
-        if (partyActive && overlayPermissionGranted && !projectionFlowActive &&
-            pendingNotificationAction == null && !suppressAutoOverlay && !isClosing
-        ) {
-            ChatOverlayService.start(this)
-        }
-    }
+    super.onUserLeaveHint()
+    // Android sends this callback when the projection selector switches to the chosen
+    // app. Starting another FGS here is background work and can terminate the process
+    // on recent Android versions. Floating chat starts only from explicit minimize.
+}
 
-    override fun onDestroy() {
+override fun onDestroy() {
         if (isFinishing) {
             isClosing = true
             applyFullscreen(false)
