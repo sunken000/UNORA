@@ -730,17 +730,13 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onUserLeaveHint() {
-        super.onUserLeaveHint()
-        val partyActive = partyViewModel.state.value.partyId != null &&
-            partyViewModel.state.value.phase !in setOf(PartyPhase.Idle, PartyPhase.Ended)
-        if (partyActive && overlayPermissionGranted && !projectionFlowActive &&
-            pendingNotificationAction == null && !suppressAutoOverlay && !isClosing
-        ) {
-            ChatOverlayService.start(this)
-        }
-    }
+    super.onUserLeaveHint()
+    // Android sends this callback when the projection selector switches to the chosen
+    // app. Starting another FGS here is background work and can terminate the process
+    // on recent Android versions. Floating chat starts only from explicit minimize.
+}
 
-    override fun onDestroy() {
+override fun onDestroy() {
         if (isFinishing) {
             isClosing = true
             applyFullscreen(false)

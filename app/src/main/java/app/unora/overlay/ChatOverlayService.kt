@@ -60,7 +60,8 @@ class ChatOverlayService : Service() {
     private var bubbleY = 280
 
     override fun onCreate() {
-        super.onCreate()
+    super.onCreate()
+    try {
         createChannel()
         startForeground(NOTIFICATION_ID, notification())
         if (!Settings.canDrawOverlays(this) || ChatOverlayRuntime.partyState == null) {
@@ -70,9 +71,15 @@ class ChatOverlayService : Service() {
         windowManager = getSystemService(WindowManager::class.java)
         showBubble()
         observeParty()
+    } catch (error: Throwable) {
+        // An exception escaping Service.onCreate is process-fatal. The floating overlay
+        // is optional, so contain OEM/foreground-service/window-manager failures.
+        Log.e(TAG, "overlay service initialization failed", error)
+        stopSelf()
     }
+}
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) stopSelf()
         return START_STICKY
     }
